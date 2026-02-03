@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vortex Engine Editor</title>
+    <style>
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        #toolbar { background-color: #252526; padding: 10px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #3e3e42; }
+        button { background-color: #0e639c; color: white; border: none; padding: 6px 12px; cursor: pointer; font-size: 14px; }
+        button:hover { background-color: #1177bb; }
+        button:disabled { background-color: #444; cursor: not-allowed; }
+        #log { flex: 1; padding: 10px; overflow-y: auto; font-family: 'Consolas', 'Courier New', monospace; white-space: pre-wrap; }
+        .error { color: #f48771; }
+        .success { color: #89d185; }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <button id="selectDirBtn">Select Game Folder</button>
+        <span id="dirName" style="font-style: italic; color: #888;">No folder selected</span>
+        <div style="flex: 1;"></div>
+        <label><input type="checkbox" id="debugCheck"> Debug</label>
+        <label><input type="checkbox" id="minifyCheck"> Minify</label>
+        <button id="downloadBtn" disabled>Download Bundle</button>
+        <button id="runBtn" disabled>Run</button>
+    </div>
+    <div id="log"></div>
+
+    <script type="module">
+        import VFS from './vfs.js';
+        import { compile } from './compiler.js';
+
+        let dirHandle = null;
+        const selectDirBtn = document.getElementById('selectDirBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const runBtn = document.getElementById('runBtn');
+        const dirNameDisplay = document.getElementById('dirName');
+        const logDiv = document.getElementById('log');
+        const minifyCheck = document.getElementById('minifyCheck');
+        const debugCheck = document.getElementById('debugCheck');
+
+        function log(msg, type = '') {
+            const span = document.createElement('div');
+            span.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            if (type) span.className = type;
+            logDiv.appendChild(span);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        selectDirBtn.addEventListener('click', async () => {
+            try {
+                dirHandle = await window.showDirectoryPicker();
+                dirNameDisplay.textContent = dirHandle.name;
+                downloadBtn.disabled = false;
+                runBtn.disabled = false;
+                log(`Selected folder: ${dirHandle.name}`);
+            } catch (e) {
+                log("Folder selection cancelled or failed.", "error");
+            }
+        });
+
+        async function scanDirectory(handle, vfs, path = '') {
+            for await (const entry of handle.values()) {
+                const entryPath = path + '/' + entry.name;
+                if (entry.kind === 'file') {
+                    const file = await entry.getFile();
+                    const buffer = await file.arrayBuffer();
+                    vfs.addFile(entryPath, new Uint8Array(buffer));
+                } else if (entry.kind === 'directory') {
+                    await scanDirectory(entry, vfs, entryPath);
+                }
+            }
+        }
+
+        async function performCompile() {
+            if (!dirHandle) return;
+            log("Scanning files...");
+            const vfs = new VFS();
+            await scanDirectory(dirHandle, vfs);
+            log(`Loaded ${vfs.files.size} files.`);
+            
+            log("Compiling...");
+            return await compile(vfs, { minify: minifyCheck.checked });
+        }
+
+        downloadBtn.addEventListener('click', async () => {
+            try {
+                const result = await performCompile();
+                if (!result) return;
+
+                log(`Compilation successful! Bundle: ${result.name} (${(result.buffer.length / 1024).toFixed(2)} KB)`, "success");
+                
+                // Trigger download
+                const blob = new Blob([result.buffer], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = result.name;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                log(`Error: ${e.message}`, "error");
+                console.error(e);
+            }
+        });
+
+        runBtn.addEventListener('click', async () => {
+            try {
+                const result = await performCompile();
+                if (!result) return;
+
+                const blob = new Blob([result.buffer], { type: 'application/octet-stream' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                // Shorten URL logic
+                let shortUrl = blobUrl.replace(/^blob:/, '');
+                let protocolChar = '';
+                if (shortUrl.startsWith('http://')) {
+                    shortUrl = shortUrl.substring(7);
+                    protocolChar = 'h';
+                } else if (shortUrl.startsWith('https://')) {
+                    shortUrl = shortUrl.substring(8);
+                    protocolChar = 's';
+                }
+                shortUrl = shortUrl.replace(/^www\./, '');
+
+                const options = {
+                    u: protocolChar + shortUrl,
+                    d: debugCheck.checked ? 1 : 0
+                };
+
+                const base64 = btoa(JSON.stringify(options));
+                window.open(`runtime.html#vortex=${encodeURIComponent(base64)}`, '_blank');
+            } catch (e) {
+                log(`Error: ${e.message}`, "error");
+                console.error(e);
+            }
+        });
+    </script>
+</body>
+</html>
